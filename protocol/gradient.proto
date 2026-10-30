@@ -1,0 +1,604 @@
+syntax = "proto3";
+
+package locdist.v1;
+
+option go_package = "generated/gradient";
+
+// =====================================================
+// Parameter Metadata
+// =====================================================
+
+message ParameterMetadata {
+
+  string name = 1;
+
+  repeated int64 shape = 2;
+
+  int64 numel = 3;
+
+  string dtype = 4;
+
+  uint32 layer_order = 5;
+}
+
+
+// =====================================================
+// Gradient Chunk
+// =====================================================
+
+message GradientChunk {
+
+  ParameterMetadata metadata = 1;
+
+  bool has_grad = 2;
+
+  bytes data = 3;
+
+  uint64 byte_size = 4;
+
+  string data_dtype = 5;
+
+  string encoding = 6;
+
+  repeated int64 indices = 7;
+
+  bytes indices_u32 = 8;
+
+  uint64 sync_round = 9;
+}
+
+message GradientChunkGroup {
+
+  uint32 group_id = 1;
+
+  uint64 sync_round = 2;
+
+  repeated GradientChunk chunks = 3;
+
+  uint64 byte_size = 4;
+}
+
+
+// =====================================================
+// Runtime → Worker Service
+// =====================================================
+
+message GradientSubmission {
+
+  uint32 runtime_version = 1;
+
+  string job_id = 2;
+
+  string worker_id = 3;
+
+  repeated GradientChunk chunks = 4;
+
+  repeated GradientChunkGroup groups = 5;
+}
+
+message GradientChunkSubmission {
+
+  uint32 runtime_version = 1;
+
+  string job_id = 2;
+
+  string worker_id = 3;
+
+  GradientChunk chunk = 4;
+}
+
+
+// =====================================================
+// Worker Service → Runtime
+// =====================================================
+
+message AggregatedGradientResponse {
+
+  uint32 runtime_version = 1;
+
+  string job_id = 2;
+
+  uint32 participating_workers = 3;
+
+  uint64 aggregation_round = 4;
+
+  repeated GradientChunk chunks = 5;
+
+  repeated GradientChunkGroup groups = 6;
+}
+
+message AggregatedGradientChunkResponse {
+
+  uint32 runtime_version = 1;
+
+  string job_id = 2;
+
+  uint32 participating_workers = 3;
+
+  uint64 aggregation_round = 4;
+
+  GradientChunk chunk = 5;
+
+  GradientChunkGroup group = 6;
+}
+
+// =====================================================
+// Worker Registration and Status
+// =====================================================
+
+enum WorkerStatus {
+
+  WORKER_STATUS_UNKNOWN = 0;
+
+  WORKER_STATUS_IDLE = 1;
+
+  WORKER_STATUS_PREPARING = 2;
+
+  WORKER_STATUS_INSTALLING = 3;
+
+  WORKER_STATUS_RUNNING = 4;
+
+  WORKER_STATUS_COMPLETED = 5;
+
+  WORKER_STATUS_FAILED = 6;
+}
+
+message RegisterWorkerRequest {
+
+  string worker_id = 1;
+
+  string host = 2;
+
+  string grpc_port = 3;
+
+  string master_id = 4;
+
+  string pairing_token = 5;
+}
+
+// =====================================================
+// Worker Pairing
+// =====================================================
+
+enum PairingDecision {
+
+  PAIRING_DECISION_UNKNOWN = 0;
+
+  PAIRING_DECISION_ACCEPTED = 1;
+
+  PAIRING_DECISION_REJECTED = 2;
+}
+
+message PairWorkerRequest {
+
+  string request_id = 1;
+
+  string master_id = 2;
+
+  string master_name = 3;
+
+  string master_host = 4;
+
+  string master_grpc_port = 5;
+
+  string worker_id = 6;
+
+  string pairing_token = 7;
+}
+
+message PairWorkerResponse {
+
+  string request_id = 1;
+
+  PairingDecision decision = 2;
+
+  string message = 3;
+}
+
+message UnpairWorkerRequest {
+
+  string worker_id = 1;
+
+  string master_id = 2;
+
+  string pairing_token = 3;
+}
+
+message UnpairWorkerResponse {
+
+  bool unpaired = 1;
+}
+
+message WorkerHeartbeat {
+
+  string worker_id = 1;
+
+  string master_id = 2;
+
+  string pairing_token = 3;
+
+  WorkerStatus status = 4;
+
+  string job_id = 5;
+}
+
+message WorkerHeartbeatResponse {
+
+  bool accepted = 1;
+
+  int64 server_unix_time = 2;
+}
+
+message WorkerOfflineRequest {
+
+  string worker_id = 1;
+
+  string master_id = 2;
+
+  string pairing_token = 3;
+}
+
+message WorkerOfflineResponse {
+
+  bool acknowledged = 1;
+}
+
+// =====================================================
+// Workspace Distribution
+// =====================================================
+
+message PrepareWorkspaceRequest {
+
+  string job_id = 1;
+
+  string worker_id = 2;
+
+  string master_id = 3;
+
+  string pairing_token = 4;
+
+  string entrypoint = 5;
+
+  string dataset_path = 6;
+
+  bytes workspace_zip = 7;
+}
+
+message PrepareWorkspaceResponse {
+
+  string job_id = 1;
+
+  bool prepared = 2;
+
+  string workspace_path = 3;
+}
+
+message WorkspaceChunk {
+
+  string job_id = 1;
+
+  string worker_id = 2;
+
+  string master_id = 3;
+
+  string pairing_token = 4;
+
+  string entrypoint = 5;
+
+  string dataset_path = 6;
+
+  bytes data = 7;
+
+  uint64 offset = 8;
+}
+
+// =====================================================
+// Worker Environment Setup
+// =====================================================
+
+enum JobSetupStatus {
+
+  JOB_SETUP_STATUS_UNKNOWN = 0;
+
+  JOB_SETUP_STATUS_WORKSPACE_RECEIVED = 1;
+
+  JOB_SETUP_STATUS_SETTING_UP = 2;
+
+  JOB_SETUP_STATUS_READY = 3;
+
+  JOB_SETUP_STATUS_FAILED = 4;
+}
+
+message SetupJobRequest {
+
+  string job_id = 1;
+
+  string worker_id = 2;
+
+  string master_id = 3;
+
+  string pairing_token = 4;
+
+  bool retry = 5;
+}
+
+message SetupJobResponse {
+
+  string job_id = 1;
+
+  string worker_id = 2;
+
+  JobSetupStatus status = 3;
+
+  string error_message = 4;
+
+  string log_path = 5;
+}
+
+// =====================================================
+// Training Process Lifecycle
+// =====================================================
+
+enum JobRunStatus {
+
+  JOB_RUN_STATUS_UNKNOWN = 0;
+
+  JOB_RUN_STATUS_ARMED = 1;
+
+  JOB_RUN_STATUS_RUNNING = 2;
+
+  JOB_RUN_STATUS_COMPLETED = 3;
+
+  JOB_RUN_STATUS_FAILED = 4;
+
+  JOB_RUN_STATUS_CANCELLED = 5;
+}
+
+message JobCommandRequest {
+
+  string job_id = 1;
+
+  string worker_id = 2;
+
+  string master_id = 3;
+
+  string pairing_token = 4;
+}
+
+message JobCommandResponse {
+
+  string job_id = 1;
+
+  string worker_id = 2;
+
+  JobRunStatus status = 3;
+
+  string error_message = 4;
+
+  string log_path = 5;
+
+  int32 exit_code = 6;
+
+  bytes log_tail = 7;
+}
+
+message ResultFile {
+
+  string path = 1;
+
+  uint64 size = 2;
+
+  string sha256 = 3;
+
+  bool log_file = 4;
+}
+
+message ResultManifestResponse {
+
+  string job_id = 1;
+
+  string worker_id = 2;
+
+  repeated ResultFile files = 3;
+
+  repeated string missing_outputs = 4;
+
+  repeated string collection_errors = 5;
+}
+
+message DownloadResultRequest {
+
+  string job_id = 1;
+
+  string worker_id = 2;
+
+  string master_id = 3;
+
+  string pairing_token = 4;
+
+  string path = 5;
+}
+
+message ResultChunk {
+
+  bytes data = 1;
+}
+
+message BenchmarkChunk {
+
+  string worker_id = 1;
+
+  string master_id = 2;
+
+  string pairing_token = 3;
+
+  bytes data = 4;
+}
+
+message BenchmarkResult {
+
+  string worker_id = 1;
+
+  uint64 bytes_received = 2;
+
+  int64 duration_millis = 3;
+
+  double mbps = 4;
+}
+
+message RegisterWorkerResponse {
+
+  string worker_id = 1;
+
+  bool registered = 2;
+}
+
+message WorkerStatusUpdate {
+
+  string worker_id = 1;
+
+  WorkerStatus status = 2;
+
+  string job_id = 3;
+}
+
+message WorkerStatusResponse {
+
+  string worker_id = 1;
+
+  WorkerStatus status = 2;
+}
+
+
+// =====================================================
+// RPC Service
+// =====================================================
+
+service WorkerBridge {
+
+  rpc SynchronizeGradients(
+    GradientSubmission
+  ) returns (
+    AggregatedGradientResponse
+  );
+
+  rpc SynchronizeGradientChunk(
+    GradientChunkSubmission
+  ) returns (
+    AggregatedGradientChunkResponse
+  );
+
+  rpc SynchronizeGradientBatch(
+    GradientSubmission
+  ) returns (
+    AggregatedGradientResponse
+  );
+
+  rpc SynchronizeGradientBatchStream(
+    GradientSubmission
+  ) returns (
+    stream AggregatedGradientChunkResponse
+  );
+
+  rpc RegisterWorker(
+    RegisterWorkerRequest
+  ) returns (
+    RegisterWorkerResponse
+  );
+
+  rpc UpdateWorkerStatus(
+    WorkerStatusUpdate
+  ) returns (
+    WorkerStatusResponse
+  );
+
+  rpc PairWorker(
+    PairWorkerRequest
+  ) returns (
+    PairWorkerResponse
+  );
+
+  rpc UnpairWorker(
+    UnpairWorkerRequest
+  ) returns (
+    UnpairWorkerResponse
+  );
+
+  rpc Heartbeat(
+    WorkerHeartbeat
+  ) returns (
+    WorkerHeartbeatResponse
+  );
+
+  rpc GoingOffline(
+    WorkerOfflineRequest
+  ) returns (
+    WorkerOfflineResponse
+  );
+
+  rpc PrepareWorkspace(
+    PrepareWorkspaceRequest
+  ) returns (
+    PrepareWorkspaceResponse
+  );
+
+  rpc UploadWorkspace(
+    stream WorkspaceChunk
+  ) returns (
+    PrepareWorkspaceResponse
+  );
+
+  rpc SetupJob(
+    SetupJobRequest
+  ) returns (
+    SetupJobResponse
+  );
+
+  rpc ArmJob(
+    JobCommandRequest
+  ) returns (
+    JobCommandResponse
+  );
+
+  rpc ReleaseJob(
+    JobCommandRequest
+  ) returns (
+    JobCommandResponse
+  );
+
+  rpc StopJob(
+    JobCommandRequest
+  ) returns (
+    JobCommandResponse
+  );
+
+  rpc GetJobStatus(
+    JobCommandRequest
+  ) returns (
+    JobCommandResponse
+  );
+
+  rpc CleanupJob(
+    JobCommandRequest
+  ) returns (
+    JobCommandResponse
+  );
+
+  rpc GetResultManifest(
+    JobCommandRequest
+  ) returns (
+    ResultManifestResponse
+  );
+
+  rpc DownloadResult(
+    DownloadResultRequest
+  ) returns (
+    stream ResultChunk
+  );
+
+  rpc BenchmarkUpload(
+    stream BenchmarkChunk
+  ) returns (
+    BenchmarkResult
+  );
+}

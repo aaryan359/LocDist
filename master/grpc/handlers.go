@@ -1,0 +1,100 @@
+package grpc
+
+import (
+	"context"
+
+	"github.com/aaryan359/Locdist/master/coordinator"
+	gradient "github.com/aaryan359/Locdist/master/generated/gradient"
+)
+
+type MasterServer struct {
+	gradient.UnimplementedWorkerBridgeServer
+
+	coordinator *coordinator.Coordinator
+}
+
+func NewMasterServer(
+	coordinatorService *coordinator.Coordinator,
+) *MasterServer {
+
+	return &MasterServer{
+		coordinator: coordinatorService,
+	}
+}
+
+func (s *MasterServer) SynchronizeGradients(
+	ctx context.Context,
+	request *gradient.GradientSubmission,
+) (*gradient.AggregatedGradientResponse, error) {
+
+	return s.coordinator.SynchronizeGradients(
+		request,
+	)
+}
+
+func (s *MasterServer) SynchronizeGradientChunk(
+	ctx context.Context,
+	request *gradient.GradientChunkSubmission,
+) (*gradient.AggregatedGradientChunkResponse, error) {
+	return s.coordinator.SynchronizeGradientChunk(
+		request,
+	)
+}
+
+func (s *MasterServer) SynchronizeGradientBatch(
+	ctx context.Context,
+	request *gradient.GradientSubmission,
+) (*gradient.AggregatedGradientResponse, error) {
+	return s.coordinator.SynchronizeGradientBatch(
+		request,
+	)
+}
+
+func (s *MasterServer) SynchronizeGradientBatchStream(
+	request *gradient.GradientSubmission,
+	stream gradient.WorkerBridge_SynchronizeGradientBatchStreamServer,
+) error {
+	return s.coordinator.SynchronizeGradientBatchStream(
+		request,
+		func(response *gradient.AggregatedGradientChunkResponse) error {
+			return stream.Send(response)
+		},
+	)
+}
+
+func (s *MasterServer) RegisterWorker(
+	ctx context.Context,
+	request *gradient.RegisterWorkerRequest,
+) (*gradient.RegisterWorkerResponse, error) {
+
+	return s.coordinator.RegisterWorker(request)
+}
+
+func (s *MasterServer) UpdateWorkerStatus(
+	ctx context.Context,
+	request *gradient.WorkerStatusUpdate,
+) (*gradient.WorkerStatusResponse, error) {
+
+	return s.coordinator.UpdateWorkerStatus(request)
+}
+
+func (s *MasterServer) UnpairWorker(
+	ctx context.Context,
+	request *gradient.UnpairWorkerRequest,
+) (*gradient.UnpairWorkerResponse, error) {
+	return s.coordinator.UnpairWorker(request)
+}
+
+func (s *MasterServer) Heartbeat(
+	ctx context.Context,
+	request *gradient.WorkerHeartbeat,
+) (*gradient.WorkerHeartbeatResponse, error) {
+	return s.coordinator.Heartbeat(request)
+}
+
+func (s *MasterServer) GoingOffline(
+	ctx context.Context,
+	request *gradient.WorkerOfflineRequest,
+) (*gradient.WorkerOfflineResponse, error) {
+	return s.coordinator.GoingOffline(request)
+}

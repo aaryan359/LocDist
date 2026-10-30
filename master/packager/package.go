@@ -1,0 +1,280 @@
+package packager
+
+import (
+	"archive/zip"
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+
+	"github.com/aaryan359/Locdist/master/project"
+)
+
+const (
+	MaxPackageBytes = 10 << 30
+	MaxRPCBytes     = MaxPackageBytes + (1 << 20)
+)
+
+type PackageRequest struct {
+	ProjectRoot   string
+	JobID         string
+	WorkerID      string
+	Entrypoint    string
+	DatasetPath   string
+	ShardPath     string
+	ShardKind     string
+	Outputs       []string
+	RuntimePath   string
+	Communication project.CommunicationSpec
+	Training      project.TrainingSpec
+}
+
+type JobConfig struct {
+	JobID         string                    `json:"job_id"`
+	WorkerID      string                    `json:"worker_id"`
+	Entrypoint    string                    `json:"entrypoint"`
+	DatasetPath   string                    `json:"dataset_path"`
+	Outputs       []string                  `json:"outputs,omitempty"`
+	Communication project.CommunicationSpec `json:"communication,omitempty"`
+	Training      project.TrainingSpec      `json:"training,omitempty"`
+}
+
+func Build(request PackageRequest) ([]byte, error) {
+	if err := validateRequest(request); err != nil {
+		return nil, err
+	}
+
+	var buffer bytes.Buffer
+	if err := Write(&buffer, request); err != nil {
+		return nil, err
+	}
+	if buffer.Len() > MaxPackageBytes {
+		return nil, fmt.Errorf("workspace package exceeds %d bytes", MaxPackageBytes)
+	}
+	return buffer.Bytes(), nil
+}
+
+func Write(target io.Writer, request PackageRequest) error {
+	if err := validateRequest(request); err != nil {
+		return err
+	}
+	writer := zip.NewWriter(target)
+	if err := addProjectFiles(writer, request); err != nil {
+		_ = writer.Close()
+		return err
+	}
+	if err := addRuntimeFiles(writer, request); err != nil {
+		_ = writer.Close()
+		return err
+	}
+	if err := addJobConfig(writer, request); err != nil {
+		_ = writer.Close()
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("close workspace package: %w", err)
+	}
+	return nil
+}
+
+func validateRequest(request PackageRequest) error {
+	if request.ProjectRoot == "" ||
+		request.JobID == "" ||
+		request.WorkerID == "" ||
+		request.Entrypoint == "" ||
+		request.DatasetPath == "" ||
+		request.ShardPath == "" {
+		return fmt.Errorf("workspace package request is incomplete")
+	}
+	return nil
+}
+
+func addProjectFiles(writer *zip.Writer, request PackageRequest) error {
+	return filepath.WalkDir(
+		request.ProjectRoot,
+		func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			relativePath, err := filepath.Rel(request.ProjectRoot, path)
+			if err != nil {
+				return err
+			}
+			if relativePath == "." {
+				return nil
+			}
+			relativePath = filepath.ToSlash(relativePath)
+			if shouldSkip(relativePath, entry) {
+				if entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if entry.IsDir() {
+				if request.ShardKind == "directory" && relativePath == filepath.ToSlash(request.DatasetPath) {
+					if err := addDirectory(writer, request.ShardPath, relativePath); err != nil {
+						return err
+					}
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if entry.Type()&os.ModeSymlink != 0 {
+				return nil
+			}
+			if request.ShardKind != "directory" && relativePath == filepath.ToSlash(request.DatasetPath) {
+				return addFile(writer, request.ShardPath, relativePath)
+			}
+			return addFile(writer, path, relativePath)
+		},
+	)
+}
+
+func addDirectory(writer *zip.Writer, sourceRoot string, archiveRoot string) error {
+	return filepath.WalkDir(sourceRoot, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		relative, err := filepath.Rel(sourceRoot, path)
+		if err != nil {
+			return err
+		}
+		return addFile(writer, path, filepath.ToSlash(filepath.Join(archiveRoot, relative)))
+	})
+}
+
+func addRuntimeFiles(writer *zip.Writer, request PackageRequest) error {
+	runtimePath, err := resolveRuntimePath(request.RuntimePath)
+	if err != nil {
+		return err
+	}
+	return filepath.WalkDir(runtimePath, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(runtimePath, path)
+		if err != nil {
+			return err
+		}
+		if relative == "." {
+			return nil
+		}
+		relative = filepath.ToSlash(relative)
+		if shouldSkip(relative, entry) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		return addFile(writer, path, filepath.ToSlash(filepath.Join("locdist", relative)))
+	})
+}
+
+func resolveRuntimePath(configured string) (string, error) {
+	candidates := []string{}
+	if configured != "" {
+		candidates = append(candidates, configured)
+	}
+	if executable, err := os.Executable(); err == nil {
+		binDir := filepath.Dir(executable)
+		candidates = append(candidates,
+			filepath.Join(binDir, "runtime", "locdist"),
+			filepath.Join(binDir, "..", "runtime", "locdist"),
+			filepath.Join(binDir, "..", "..", "runtime", "locdist"),
+		)
+	}
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if ok {
+		candidates = append(candidates, filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "..", "..", "runtime", "locdist")))
+	}
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		info, err := os.Stat(candidate)
+		if err == nil && info.IsDir() {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("LDGCC runtime files were not found")
+}
+
+func shouldSkip(relativePath string, entry os.DirEntry) bool {
+	parts := strings.Split(relativePath, "/")
+	for _, part := range parts {
+		switch part {
+		case ".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".ldgcc", "ldgcc_jobs", "locdist":
+			return true
+		}
+	}
+	return strings.HasSuffix(entry.Name(), ".pyc")
+}
+
+func addFile(writer *zip.Writer, sourcePath string, archivePath string) error {
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", sourcePath, err)
+	}
+	defer source.Close()
+
+	header := &zip.FileHeader{
+		Name:   archivePath,
+		Method: zip.Deflate,
+	}
+	header.SetMode(0o644)
+	target, err := writer.CreateHeader(header)
+	if err != nil {
+		return fmt.Errorf("create archive entry %s: %w", archivePath, err)
+	}
+	if _, err := io.Copy(target, source); err != nil {
+		return fmt.Errorf("write archive entry %s: %w", archivePath, err)
+	}
+	return nil
+}
+
+func addJobConfig(writer *zip.Writer, request PackageRequest) error {
+	data, err := json.MarshalIndent(
+		JobConfig{
+			JobID:         request.JobID,
+			WorkerID:      request.WorkerID,
+			Entrypoint:    request.Entrypoint,
+			DatasetPath:   request.DatasetPath,
+			Outputs:       request.Outputs,
+			Communication: request.Communication,
+			Training:      request.Training,
+		},
+		"",
+		"  ",
+	)
+	if err != nil {
+		return err
+	}
+
+	header := &zip.FileHeader{
+		Name:   "job_config.json",
+		Method: zip.Deflate,
+	}
+	header.SetMode(0o644)
+	target, err := writer.CreateHeader(header)
+	if err != nil {
+		return err
+	}
+	_, err = target.Write(append(data, '\n'))
+	return err
+}
